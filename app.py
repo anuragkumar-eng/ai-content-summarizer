@@ -2,6 +2,12 @@
 app.py  —  AI-Powered Content Summarizer Studio
 Modern, sleek SaaS-grade UI for LangChain-powered summarization.
 Supports Groq (Free), Google Gemini (Free), and OpenAI (Paid).
+Features:
+  - 6 Specialized Summary Personas (Executive, Action Items, ELI5, Social, etc.)
+  - Multilingual Output (10+ Languages)
+  - Pre-processing metrics (Word count, read time, token estimates)
+  - Post-processing compression analytics
+  - Auto-scrapes URLs & extracts PDFs
 """
 
 import os
@@ -12,7 +18,14 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from document_processor import extract_text_from_pdf, extract_text_from_url
-from summarizer import summarize_text, get_available_models, PROVIDERS, DEFAULT_MODELS
+from summarizer import (
+    summarize_text,
+    get_available_models,
+    PROVIDERS,
+    DEFAULT_MODELS,
+    FORMAT_TYPES,
+    LANGUAGES,
+)
 
 # Reload .env on every run so updates take immediate effect
 load_dotenv(override=True)
@@ -33,7 +46,6 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 MODERN_CSS = """
 <style>
-/* Import Google Fonts */
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 html, body, [class*="css"] {
@@ -120,7 +132,7 @@ html, body, [class*="css"] {
     font-weight: 500;
 }
 
-/* ── Status Pill ─────────────────────────────────────────────── */
+/* ── Status Pills ────────────────────────────────────────────── */
 .status-pill-ok {
     display: flex;
     align-items: center;
@@ -224,6 +236,16 @@ html, body, [class*="css"] {
     border: 1px solid rgba(99, 102, 241, 0.25);
 }
 
+.meta-pill-lang {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 9999px;
+    font-weight: 600;
+    background: rgba(16, 185, 129, 0.15);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
 /* ── Analytics Bar ───────────────────────────────────────────── */
 .analytics-bar {
     display: flex;
@@ -280,7 +302,6 @@ div.stButton > button[kind="secondary"] {
     border: 1px solid rgba(255, 255, 255, 0.12) !important;
 }
 
-/* Tab Styling */
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
 }
@@ -319,7 +340,6 @@ def get_env_api_key(provider_name: str) -> str:
     """Retrieve the API key for the selected provider from environment / .env."""
     env_var = PROVIDER_ENV_VARS.get(provider_name, "")
     val = os.getenv(env_var, "").strip()
-    # Support alternate GOOGLE_API_KEY for Gemini if set
     if not val and provider_name == "Google Gemini (Free)":
         val = os.getenv("GOOGLE_API_KEY", "").strip()
     return val
@@ -400,20 +420,33 @@ with st.sidebar:
         help="Automatically discovered from your API credentials.",
     )
 
-    # Output Format Picker
-    format_type = st.radio(
-        "Summary Style",
-        options=["Short Summary", "Detailed Bullet Points"],
+    st.markdown("---")
+    st.markdown("### 🎯 Output Customization")
+
+    # Persona / Style Selector
+    format_type = st.selectbox(
+        "Summary Persona",
+        options=FORMAT_TYPES,
         index=0,
-        help="Choose between a fluid paragraph or structured bulleted insights.",
+        help="Select the specialized lens through which to synthesize the content.",
+    )
+
+    # Multilingual Target Language Selector
+    target_language = st.selectbox(
+        "🌐 Target Output Language",
+        options=LANGUAGES,
+        index=0,
+        help="The document will be synthesized and translated directly into this language.",
     )
 
     st.markdown("---")
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
             """
+            - **Personas**: Custom engineered prompts extract executive takeaways, action items, or simplified analogies.
+            - **Multilingual**: LLMs ingest source text in any language and output fluently in your selected target language.
             - **Single-Pass**: Content under 1,200 chars summarizes in 1 call for max speed.
-            - **Map-Reduce**: Large docs split into overlapping chunks, processed in parallel, and synthesized.
+            - **Map-Reduce**: Large documents split into overlapping chunks, processed in parallel, and synthesized.
             - **Auto-Fallback**: If a model spikes, the engine retries with backoff automatically.
             """
         )
@@ -451,7 +484,6 @@ SAMPLE_TEXT = (
     "fostering transparent human-in-the-loop oversight remains the paramount challenge of contemporary technology governance."
 )
 
-# Initialize Session State for Input Content
 if "current_input_text" not in st.session_state:
     st.session_state["current_input_text"] = ""
 
@@ -531,7 +563,7 @@ if raw_text:
     char_count = len(raw_text)
     word_count = len(raw_text.split())
     approx_tokens = math.ceil(char_count / 4)
-    est_reading_time = math.ceil(word_count / 220)  # average reading speed: 220 words/min
+    est_reading_time = math.ceil(word_count / 220)
 
     st.markdown(
         f"""
@@ -566,7 +598,7 @@ if raw_text:
 # ---------------------------------------------------------------------------
 st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 summarize_btn = st.button(
-    "✨ Generate Executive Summary",
+    f"✨ Generate {format_type}",
     type="primary",
     use_container_width=True,
     disabled=not bool(raw_text),
@@ -585,7 +617,7 @@ if summarize_btn:
         )
         st.stop()
 
-    with st.spinner(f"⚡ Synthesizing summary using {provider} ({model_name})..."):
+    with st.spinner(f"⚡ Synthesizing {format_type} in {target_language} using {provider} ({model_name})..."):
         try:
             summary, actual_model = summarize_text(
                 text=raw_text,
@@ -593,6 +625,7 @@ if summarize_btn:
                 format_type=format_type,
                 provider=provider,
                 model_name=model_name,
+                language=target_language,
             )
         except ValueError as exc:
             st.error(f"❌ Validation Error: {exc}")
@@ -610,18 +643,18 @@ if summarize_btn:
     time_saved = max(0.5, round((orig_words - sum_words) / 220, 1))
 
     st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
-    st.success("🎉 Executive Summary Generated Successfully!")
+    st.success(f"🎉 {format_type} Generated Successfully in {target_language}!")
 
     # Styled Executive Summary Card
     with st.container(border=True):
         st.markdown(
             f"""
             <div class="result-header">
-                <div class="result-title">📄 Executive Synthesis</div>
+                <div class="result-title">📄 {format_type}</div>
                 <div class="meta-badges">
-                    <span class="meta-pill">{format_type}</span>
                     <span class="meta-pill">{provider}</span>
                     <span class="meta-pill">{actual_model}</span>
+                    <span class="meta-pill-lang">🌐 {target_language}</span>
                 </div>
             </div>
             <div class="analytics-bar">
@@ -640,10 +673,11 @@ if summarize_btn:
     # Action Toolbar (Download & Quick Access)
     col_dl1, col_dl2 = st.columns([1, 1])
     with col_dl1:
+        clean_file_name = f"summary_{format_type.lower().replace(' ', '_')}_{target_language.split()[0].lower()}.txt"
         st.download_button(
             label="⬇️ Download Summary (.txt)",
             data=summary,
-            file_name=f"summary_{format_type.lower().replace(' ', '_')}.txt",
+            file_name=clean_file_name,
             mime="text/plain",
             use_container_width=True,
         )

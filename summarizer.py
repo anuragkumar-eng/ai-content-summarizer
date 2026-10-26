@@ -15,6 +15,8 @@ Robustness features:
     the next accessible model.
   - Automatic exponential retry on temporary 503 / 429 rate limit errors.
   - Single-pass optimization for standard-length text to minimize latency and quota.
+  - Specialized summary personas (Executive Brief, Action Items, ELI5, Social Post).
+  - Multilingual target translation & synthesis (10+ languages).
 """
 
 import logging
@@ -61,6 +63,31 @@ DEFAULT_MODELS = {
 }
 
 # ---------------------------------------------------------------------------
+# Personas & Supported Target Languages
+# ---------------------------------------------------------------------------
+FORMAT_TYPES = [
+    "Short Summary",
+    "Detailed Bullet Points",
+    "Executive Brief",
+    "Action Items & Key Decisions",
+    "Explain Like I'm 5 (ELI5)",
+    "Social & LinkedIn Post",
+]
+
+LANGUAGES = [
+    "English",
+    "Spanish (Español)",
+    "French (Français)",
+    "German (Deutsch)",
+    "Hindi (हिन्दी)",
+    "Japanese (日本語)",
+    "Chinese (中文)",
+    "Portuguese (Português)",
+    "Italian (Italiano)",
+    "Arabic (العربية)",
+]
+
+# ---------------------------------------------------------------------------
 # Dynamic Model Discovery (Queries provider API for exact accessible models)
 # ---------------------------------------------------------------------------
 def get_available_models(provider: str, api_key: str = "") -> list[str]:
@@ -83,7 +110,6 @@ def get_available_models(provider: str, api_key: str = "") -> list[str]:
                 )
             ]
             if chat_models:
-                # Put llama-3.1-8b-instant at the top if present
                 if "llama-3.1-8b-instant" in chat_models:
                     chat_models.remove("llama-3.1-8b-instant")
                     return ["llama-3.1-8b-instant"] + sorted(chat_models)
@@ -126,7 +152,6 @@ def get_available_models(provider: str, api_key: str = "") -> list[str]:
     return BASELINE_MODELS.get(provider, [])
 
 
-# Backward compatibility dict
 ALL_MODELS = BASELINE_MODELS
 
 # ---------------------------------------------------------------------------
@@ -136,35 +161,104 @@ CHUNK_SIZE    = 1_200
 CHUNK_OVERLAP = 150
 
 # ---------------------------------------------------------------------------
-# Prompts
+# Specialized Persona Prompts (Direct Single-Pass)
 # ---------------------------------------------------------------------------
 DIRECT_PROMPT_TEMPLATE = {
     "Short Summary": """\
 You are an expert technical editor. Summarise the following text into ONE concise,
-clear, and fluent paragraph. Do NOT add outside information or speculate.
+clear, and fluent paragraph capturing all essential ideas without outside fluff.
+Do NOT add outside information or speculate.
+LANGUAGE DIRECTIVE: The final summary MUST be written in {language}.
 
 Text:
 ---------
 {text}
 ---------
 
-Final paragraph summary:""",
+Final paragraph summary ({language}):""",
 
     "Detailed Bullet Points": """\
-You are an expert technical editor. Summarise the following text into structured
-bullet points covering all key takeaways. Each bullet must begin with "•".
-Do NOT add outside information or speculate.
+You are an expert technical editor. Summarise the following text into a structured,
+comprehensive bullet-point list covering every critical insight.
+Each bullet must begin with "•". Do NOT add outside information or speculate.
+LANGUAGE DIRECTIVE: The final output MUST be written in {language}.
 
 Text:
 ---------
 {text}
 ---------
 
-Detailed bullet-point summary:""",
+Detailed bullet-point summary ({language}):""",
+
+    "Executive Brief": """\
+You are a senior executive strategist. Synthesize the text into an Executive Brief.
+Structure your summary clearly with the following sections:
+- 📌 Strategic Overview (2-3 concise sentences)
+- 📊 Key Metrics, Findings & Evidence (bullet points)
+- 💡 Strategic Implications & Takeaways (actionable points)
+
+Do NOT speculate or add facts not present in the document.
+LANGUAGE DIRECTIVE: The entire executive brief MUST be written in {language}.
+
+Text:
+---------
+{text}
+---------
+
+Executive Brief ({language}):""",
+
+    "Action Items & Key Decisions": """\
+You are an expert technical project manager and analyst. Extract all actionable intelligence:
+- 🎯 Key Decisions Made & Policies Established
+- ✅ Action Items, Deliverables & Responsibilities (checklist format)
+- ⏳ Timelines, Deadlines & Future Milestones
+
+If any category has no items mentioned in the text, note "None specified in document".
+LANGUAGE DIRECTIVE: The entire output MUST be written in {language}.
+
+Text:
+---------
+{text}
+---------
+
+Action Items & Key Decisions ({language}):""",
+
+    "Explain Like I'm 5 (ELI5)": """\
+You are a brilliant educator renowned for making complex topics delightfully simple.
+Explain the core ideas of the text so that a 5-year-old or curious non-expert can immediately grasp them:
+- Use simple, everyday analogies
+- Strip away corporate and academic jargon completely
+- Keep sentences short, vivid, and friendly
+
+LANGUAGE DIRECTIVE: The entire explanation MUST be written in {language}.
+
+Text:
+---------
+{text}
+---------
+
+ELI5 Summary ({language}):""",
+
+    "Social & LinkedIn Post": """\
+You are an elite digital creator and thought leader. Transform the key ideas from the text into a viral, professional LinkedIn/Twitter post:
+- 💥 Attention-grabbing opening hook line
+- 💡 3-5 punchy takeaway points formatted with relevant emojis
+- 🚀 One actionable conclusion or thought-provoking question for the audience
+- 🏷️ 3-5 relevant trending hashtags at the end
+
+LANGUAGE DIRECTIVE: The entire post MUST be written in {language}.
+
+Text:
+---------
+{text}
+---------
+
+Social media post ({language}):""",
 }
 
 MAP_PROMPT_TEMPLATE = """\
-You are an expert technical editor. Summarise ONLY the text excerpt below.
+You are an expert technical editor. Summarise ONLY the text excerpt below into a dense,
+accurate factual summary. Preserve all critical statistics, names, and core arguments.
 Do NOT add outside information or speculate.
 
 Excerpt:
@@ -172,27 +266,92 @@ Excerpt:
 {text}
 ---------
 
-Concise summary:"""
+Concise factual summary:"""
 
+# ---------------------------------------------------------------------------
+# Specialized Persona Prompts (Map-Reduce Synthesis Step)
+# ---------------------------------------------------------------------------
 REDUCE_PROMPT_TEMPLATE = {
     "Short Summary": """\
-You are an expert editor. Combine the chunk summaries below into ONE clear,
-fluent paragraph. Do NOT add new information. Do NOT speculate.
+You are an expert editor. Below are chunk-level summaries of a longer document.
+Combine and synthesize them into ONE clear, fluent paragraph capturing the most vital ideas.
+Do NOT add outside information or speculate.
+LANGUAGE DIRECTIVE: The final synthesis MUST be written in {language}.
 
 Chunk summaries:
 {text}
 
-Final paragraph summary:""",
+Final paragraph summary ({language}):""",
 
     "Detailed Bullet Points": """\
-You are an expert editor. Combine the chunk summaries below into structured
-bullet points covering ALL key ideas. Start each bullet with "•".
-Do NOT repeat points. Do NOT add new information.
+You are an expert editor. Below are chunk-level summaries of a longer document.
+Synthesize them into a clean, comprehensive bullet-point summary covering all key takeaways.
+Each bullet must begin with "•". Group related points logically. Do NOT repeat points.
+LANGUAGE DIRECTIVE: The final synthesis MUST be written in {language}.
 
 Chunk summaries:
 {text}
 
-Detailed bullet-point summary:""",
+Detailed bullet-point summary ({language}):""",
+
+    "Executive Brief": """\
+You are a senior executive strategist. Below are chunk-level summaries of a longer document.
+Synthesize them into an Executive Brief structured as follows:
+- 📌 Strategic Overview (2-3 concise sentences)
+- 📊 Key Metrics, Findings & Evidence (bullet points)
+- 💡 Strategic Implications & Takeaways (actionable points)
+
+Do NOT speculate or invent facts.
+LANGUAGE DIRECTIVE: The entire executive brief MUST be written in {language}.
+
+Chunk summaries:
+{text}
+
+Executive Brief ({language}):""",
+
+    "Action Items & Key Decisions": """\
+You are an expert technical project manager. Below are chunk-level summaries of a longer document.
+Synthesize and extract all actionable intelligence:
+- 🎯 Key Decisions Made & Policies Established
+- ✅ Action Items, Deliverables & Responsibilities (checklist format)
+- ⏳ Timelines, Deadlines & Future Milestones
+
+If any category has no items mentioned in the summaries, note "None specified in document".
+LANGUAGE DIRECTIVE: The entire output MUST be written in {language}.
+
+Chunk summaries:
+{text}
+
+Action Items & Key Decisions ({language}):""",
+
+    "Explain Like I'm 5 (ELI5)": """\
+You are a brilliant educator renowned for making complex topics delightfully simple.
+Below are chunk-level summaries of a longer document. Synthesize their core message so that a beginner can grasp it:
+- Use simple, everyday analogies
+- Strip away corporate and academic jargon completely
+- Keep sentences short, vivid, and friendly
+
+LANGUAGE DIRECTIVE: The entire explanation MUST be written in {language}.
+
+Chunk summaries:
+{text}
+
+ELI5 Summary ({language}):""",
+
+    "Social & LinkedIn Post": """\
+You are an elite digital creator. Below are chunk-level summaries of a longer document.
+Synthesize the most interesting takeaways into a viral, professional LinkedIn/Twitter post:
+- 💥 Attention-grabbing opening hook line
+- 💡 3-5 punchy takeaway points formatted with relevant emojis
+- 🚀 One actionable conclusion or thought-provoking question for the audience
+- 🏷️ 3-5 relevant trending hashtags at the end
+
+LANGUAGE DIRECTIVE: The entire post MUST be written in {language}.
+
+Chunk summaries:
+{text}
+
+Social media post ({language}):""",
 }
 
 # ---------------------------------------------------------------------------
@@ -212,7 +371,7 @@ def _invoke_with_retry(chain, inputs: dict, max_retries: int = 3):
                 for keyword in ["503", "unavailable", "high demand", "429", "resource_exhausted", "rate limit"]
             )
             if is_transient and attempt < max_retries:
-                wait_time = attempt * 3  # 3s, 6s...
+                wait_time = attempt * 3
                 logger.warning(
                     "Temporary provider overload / rate limit. Retrying in %ds (attempt %d/%d)...",
                     wait_time,
@@ -269,8 +428,9 @@ def _run_pipeline(
     provider: str,
     model_name: str,
     temperature: float,
+    language: str = "English",
 ) -> str:
-    """Runs single-pass or Map-Reduce for the specified model."""
+    """Runs single-pass or Map-Reduce for the specified model and target language."""
     llm = _build_llm(provider, api_key, model_name, temperature)
 
     splitter = RecursiveCharacterTextSplitter(
@@ -282,14 +442,18 @@ def _run_pipeline(
     if not chunks:
         raise ValueError("Text splitting produced zero chunks.")
 
-    # Single-chunk optimisation
+    # Single-chunk optimisation: Direct Persona prompt with target language
     if len(chunks) == 1:
+        template = DIRECT_PROMPT_TEMPLATE.get(format_type, DIRECT_PROMPT_TEMPLATE["Short Summary"])
         direct_chain = (
-            ChatPromptTemplate.from_template(DIRECT_PROMPT_TEMPLATE[format_type])
+            ChatPromptTemplate.from_template(template)
             | llm
             | StrOutputParser()
         )
-        result = _invoke_with_retry(direct_chain, {"text": chunks[0].page_content})
+        result = _invoke_with_retry(
+            direct_chain,
+            {"text": chunks[0].page_content, "language": language},
+        )
         return result.strip()
 
     # Multi-chunk Map-Reduce
@@ -301,13 +465,17 @@ def _run_pipeline(
         chunk_summaries.append(chunk_summary.strip())
         time.sleep(0.5)
 
+    reduce_template = REDUCE_PROMPT_TEMPLATE.get(format_type, REDUCE_PROMPT_TEMPLATE["Short Summary"])
     reduce_chain = (
-        ChatPromptTemplate.from_template(REDUCE_PROMPT_TEMPLATE[format_type])
+        ChatPromptTemplate.from_template(reduce_template)
         | llm
         | StrOutputParser()
     )
     combined = "\n\n".join(f"[Chunk {i}] {s}" for i, s in enumerate(chunk_summaries, start=1))
-    final = _invoke_with_retry(reduce_chain, {"text": combined})
+    final = _invoke_with_retry(
+        reduce_chain,
+        {"text": combined, "language": language},
+    )
     return final.strip()
 
 
@@ -321,8 +489,9 @@ def summarize_text(
     provider: str = "Groq (Free)",
     model_name: str = "llama-3.1-8b-instant",
     temperature: float = 0.3,
+    language: str = "English",
 ) -> tuple[str, str]:
-    """Run summarisation using the selected provider.
+    """Run summarisation using the selected provider, persona style, and language.
 
     Returns
     -------
@@ -335,14 +504,13 @@ def summarize_text(
     if format_type not in REDUCE_PROMPT_TEMPLATE:
         raise ValueError(f"Unsupported format_type: {format_type}")
 
-    # Build candidate model list with current model first, followed by fallbacks
     available = get_available_models(provider, api_key)
     candidate_models = [model_name] + [m for m in available if m != model_name]
 
     last_error = None
     for idx, candidate in enumerate(candidate_models):
         try:
-            logger.info("Attempting summarisation with %s / %s...", provider, candidate)
+            logger.info("Attempting summarisation with %s / %s (Style: %s, Lang: %s)...", provider, candidate, format_type, language)
             result = _run_pipeline(
                 text=text,
                 api_key=api_key.strip(),
@@ -350,12 +518,12 @@ def summarize_text(
                 provider=provider,
                 model_name=candidate,
                 temperature=temperature,
+                language=language,
             )
             return result, candidate
         except Exception as exc:
             last_error = exc
             err_str = str(exc).lower()
-            # If model is not found, decommissioned, or unauthorized, fall back to next model
             should_fallback = any(
                 phrase in err_str
                 for phrase in [
