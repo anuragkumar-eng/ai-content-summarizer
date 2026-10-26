@@ -13,6 +13,7 @@ A modern, full-stack web application built with **Streamlit**, **LangChain**, an
 
 - **Multi-Format Ingestion**:
   - 📝 **Pasted Text**: Direct input for articles, transcripts, or notes.
+  - 🎥 **YouTube Videos**: Directly extracts subtitles/captions from YouTube URLs with an embedded player.
   - 🔗 **Web URLs**: Scrapes clean article text using `BeautifulSoup4` (strips navigation, ads, and boilerplate).
   - 📄 **PDF Uploads**: Extracts text page-by-page using `PyPDF2`.
 - **Multiple AI Providers**:
@@ -23,9 +24,10 @@ A modern, full-stack web application built with **Streamlit**, **LangChain**, an
   - **Single-Pass Optimization**: Text fitting within ~1,200 characters is summarized in a single prompt to save quota and latency.
   - **Map-Reduce Architecture**: Long documents are split into overlapping chunks (1,200 chars, 150 overlap), summarized independently (Map), and synthesized into a final output (Reduce).
   - **Automatic Fallback & Retries**: Seamless retry on transient 503/429 spikes and automatic model fallback if a model is deprecated.
-- **Output Customization**:
-  - Choose between **Short Summary** (concise paragraph) and **Detailed Bullet Points**.
-  - One-click **Download (.txt)** button.
+- **Output Customization & Personas**:
+  - **6 Specialized Personas**: Executive Brief, Short Summary, Detailed Bullet Points, Action Items & Key Decisions, ELI5, Social & LinkedIn Post.
+  - **10+ Output Languages**: Cross-lingual translation into English, Spanish, French, German, Hindi, Japanese, Chinese, etc.
+  - One-click **Download (.txt)** and **Raw Markdown** preview.
 - **Security**: API keys are securely loaded from a local `.env` file (never exposed in the UI or tracked in Git).
 
 ---

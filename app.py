@@ -3,11 +3,12 @@ app.py  —  AI-Powered Content Summarizer Studio
 Modern, sleek SaaS-grade UI for LangChain-powered summarization.
 Supports Groq (Free), Google Gemini (Free), and OpenAI (Paid).
 Features:
+  - 4 Ingestion Formats: Raw Text, Web URLs, PDF Documents, YouTube Videos
   - 6 Specialized Summary Personas (Executive, Action Items, ELI5, Social, etc.)
   - Multilingual Output (10+ Languages)
   - Pre-processing metrics (Word count, read time, token estimates)
   - Post-processing compression analytics
-  - Auto-scrapes URLs & extracts PDFs
+  - Auto-scrapes URLs, extracts PDFs, & fetches YouTube transcripts
 """
 
 import os
@@ -17,7 +18,11 @@ import logging
 import streamlit as st
 from dotenv import load_dotenv
 
-from document_processor import extract_text_from_pdf, extract_text_from_url
+from document_processor import (
+    extract_text_from_pdf,
+    extract_text_from_url,
+    extract_text_from_youtube,
+)
 from summarizer import (
     summarize_text,
     get_available_models,
@@ -443,6 +448,7 @@ with st.sidebar:
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
             """
+            - **YouTube Summarizer**: Extracts complete captions & subtitles from videos.
             - **Personas**: Custom engineered prompts extract executive takeaways, action items, or simplified analogies.
             - **Multilingual**: LLMs ingest source text in any language and output fluently in your selected target language.
             - **Single-Pass**: Content under 1,200 chars summarizes in 1 call for max speed.
@@ -460,7 +466,7 @@ st.markdown(
         <div class="hero-pill">✨ Next-Gen Content Intelligence</div>
         <h1 class="hero-title">AI Content <span class="gradient-text">Summarizer</span></h1>
         <p class="hero-subtitle">
-            Instantly condense long articles, research papers, and PDFs into crystal-clear executive summaries using high-speed LLMs.
+            Instantly condense long articles, YouTube videos, research papers, and PDFs into crystal-clear executive summaries using high-speed LLMs.
         </p>
     </div>
     """,
@@ -500,12 +506,13 @@ with col_tools2:
             st.rerun()
 
 # ---------------------------------------------------------------------------
-# Multi-Format Ingestion Tabs
+# Multi-Format Ingestion Tabs (Text, Web URL, PDF, YouTube)
 # ---------------------------------------------------------------------------
-tab_text, tab_url, tab_pdf = st.tabs([
+tab_text, tab_url, tab_pdf, tab_yt = st.tabs([
     "📝 Raw Text / Notes",
     "🔗 Web Article URL",
     "📄 PDF Document",
+    "🎥 YouTube Video",
 ])
 
 raw_text = ""
@@ -555,6 +562,25 @@ with tab_pdf:
                 st.success(f"✅ Extracted **{len(raw_text):,}** characters from **{uploaded_file.name}**.")
             except (ValueError, RuntimeError) as exc:
                 st.error(f"❌ PDF Extraction Error: {exc}")
+
+with tab_yt:
+    yt_input = st.text_input(
+        label="YouTube Video Link",
+        placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/...",
+        label_visibility="collapsed",
+    )
+    st.caption("🎥 Fetches full captions/subtitles from YouTube videos (lectures, podcasts, news, tutorials).")
+
+    if yt_input.strip():
+        with st.spinner("🔍 Fetching YouTube transcript and video details..."):
+            try:
+                raw_text, vid_id = extract_text_from_youtube(yt_input.strip())
+                input_label = f"YouTube: https://youtu.be/{vid_id}"
+                st.success(f"✅ Extracted **{len(raw_text):,}** characters of spoken transcript.")
+                # Render clean video preview
+                st.video(f"https://www.youtube.com/watch?v={vid_id}")
+            except (ValueError, RuntimeError) as exc:
+                st.error(f"❌ YouTube Error: {exc}")
 
 # ---------------------------------------------------------------------------
 # Live Pre-Processing Statistics Bar

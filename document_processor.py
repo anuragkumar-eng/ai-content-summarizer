@@ -1,14 +1,17 @@
 ﻿"""
 document_processor.py
 ---------------------
-Handles text extraction from three input sources:
-  1. Plain text  – returned as-is.
-  2. PDF files   – extracted page-by-page with PyPDF2.
-  3. Web URLs    – scraped and cleaned with requests + BeautifulSoup.
+Handles text extraction from four input sources:
+  1. Plain text   – returned as-is.
+  2. PDF files    – extracted page-by-page with PyPDF2.
+  3. Web URLs     – scraped and cleaned with requests + BeautifulSoup.
+  4. YouTube URLs – transcripts fetched directly with youtube-transcript-api.
 """
 
 import io
+import re
 import logging
+from urllib.parse import urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -168,3 +171,113 @@ def extract_text_from_url(url: str) -> str:
 
     logger.debug("Extracted %d chars from URL '%s'", len(full_text), url)
     return full_text
+
+
+# ---------------------------------------------------------------------------
+# YouTube Transcript Extraction
+# ---------------------------------------------------------------------------
+
+def extract_youtube_video_id(url: str) -> str:
+    """Extract the 11-character YouTube video ID from various URL formats.
+
+    Supports:
+      - https://www.youtube.com/watch?v=VIDEO_ID
+      - https://youtu.be/VIDEO_ID
+      - https://www.youtube.com/shorts/VIDEO_ID
+      - https://www.youtube.com/embed/VIDEO_ID
+      - https://m.youtube.com/watch?v=VIDEO_ID
+      - Raw 11-character video IDs
+    """
+    if not url:
+        return ""
+    clean_url = url.strip()
+
+    # Direct 11-character video ID
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", clean_url):
+        return clean_url
+
+    parsed = urlparse(clean_url)
+    hostname = (parsed.hostname or "").lower()
+
+    if "youtu.be" in hostname:
+        path = parsed.path.strip("/")
+        return path.split("/")[0] if path else ""
+
+    if "youtube.com" in hostname:
+        if parsed.path == "/watch":
+            return parse_qs(parsed.query).get("v", [""])[0]
+        elif parsed.path.startswith(("/shorts/", "/embed/", "/v/")):
+            parts = parsed.path.strip("/").split("/")
+            return parts[1] if len(parts) >= 2 else ""
+
+    # Fallback regex search for any 11-character YouTube ID pattern
+    match = re.search(r"(?:v=|\/|embed\/|shorts\/)([0-9A-Za-z_-]{11})", clean_url)
+    return match.group(1) if match else ""
+
+
+def extract_text_from_youtube(url: str) -> tuple[str, str]:
+    """Fetch and concatenate transcript text from a YouTube video URL.
+
+    Parameters
+    ----------
+    url : str
+        YouTube video URL or video ID.
+
+    Returns
+    -------
+    tuple[str, str]
+        (full_transcript_text, video_id)
+
+    Raises
+    ------
+    ValueError
+        If URL does not contain a valid YouTube video ID or transcript is empty.
+    RuntimeError
+        If video subtitles are disabled, unavailable, or an API error occurs.
+    """
+    video_id = extract_youtube_video_id(url)
+    if not video_id:
+        raise ValueError(
+            "Could not detect a valid YouTube video ID from the provided URL. "
+            "Please check the link format (e.g. https://www.youtube.com/watch?v=...)."
+        )
+
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+
+        # Try to find transcripts in preferred languages or fallback to first available
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+
+        try:
+            # Check for English first
+            transcript = transcript_list.find_transcript(["en", "en-US", "en-GB"])
+        except Exception:
+            # Fallback to the first available transcript (original or auto-generated)
+            transcript = next(iter(transcript_list))
+
+        data = transcript.fetch()
+        full_text = " ".join(item.get("text", "") for item in data if item.get("text")).strip()
+
+        if not full_text:
+            raise ValueError("The video's transcript was retrieved but contains no readable text.")
+
+        logger.debug("Extracted %d chars of transcript from YouTube video %s", len(full_text), video_id)
+        return full_text, video_id
+
+    except Exception as exc:
+        err_msg = str(exc)
+        if "TranscriptsDisabled" in err_msg or "Subtitles are disabled" in err_msg:
+            raise RuntimeError(
+                f"Subtitles/captions are disabled for this YouTube video (ID: {video_id}). "
+                "Only videos with enabled subtitles or auto-captions can be summarized."
+            )
+        elif "NoTranscriptFound" in err_msg:
+            raise RuntimeError(
+                f"No transcript or captions were found for YouTube video (ID: {video_id})."
+            )
+        elif "VideoUnavailable" in err_msg:
+            raise RuntimeError(
+                f"This YouTube video is private, age-restricted, or unavailable (ID: {video_id})."
+            )
+        else:
+            raise RuntimeError(f"Failed to fetch YouTube transcript: {exc}")
