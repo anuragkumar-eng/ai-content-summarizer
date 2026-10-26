@@ -1,4 +1,4 @@
-﻿"""
+"""
 document_processor.py
 ---------------------
 Handles text extraction from four input sources:
@@ -245,18 +245,33 @@ def extract_text_from_youtube(url: str) -> tuple[str, str]:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
 
-        # Try to find transcripts in preferred languages or fallback to first available
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Universal adapter: handles youtube_transcript_api v1.x and legacy v0.x
+        if hasattr(YouTubeTranscriptApi, "list_transcripts"):
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            try:
+                transcript = transcript_list.find_transcript(["en", "en-US", "en-GB"])
+            except Exception:
+                transcript = next(iter(transcript_list))
+            data = transcript.fetch()
+        else:
+            api = YouTubeTranscriptApi()
+            try:
+                data = api.fetch(video_id)
+            except Exception:
+                transcripts = api.list(video_id)
+                try:
+                    t = transcripts.find_transcript(["en", "en-US", "en-GB"])
+                except Exception:
+                    t = next(iter(transcripts))
+                data = t.fetch()
 
-        try:
-            # Check for English first
-            transcript = transcript_list.find_transcript(["en", "en-US", "en-GB"])
-        except Exception:
-            # Fallback to the first available transcript (original or auto-generated)
-            transcript = next(iter(transcript_list))
-
-        data = transcript.fetch()
-        full_text = " ".join(item.get("text", "") for item in data if item.get("text")).strip()
+        parts = []
+        for item in data:
+            if hasattr(item, "text"):
+                parts.append(item.text)
+            elif isinstance(item, dict):
+                parts.append(item.get("text", ""))
+        full_text = " ".join(parts).strip()
 
         if not full_text:
             raise ValueError("The video's transcript was retrieved but contains no readable text.")
