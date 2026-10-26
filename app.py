@@ -1,4 +1,4 @@
-﻿"""
+"""
 app.py  —  AI-Powered Content Summarizer Studio
 Modern, sleek SaaS-grade UI for LangChain-powered summarization & Q&A.
 Supports Groq (Free), Google Gemini (Free), and OpenAI (Paid).
@@ -12,11 +12,15 @@ Features:
 """
 
 import os
+import io
+import re
 import math
 import logging
+from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
+from gtts import gTTS
 
 from document_processor import (
     extract_text_from_pdf,
@@ -341,6 +345,54 @@ div.stButton > button[kind="secondary"] {
 st.markdown(MODERN_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
+# TTS Audio Helpers (Phase 4)
+# ---------------------------------------------------------------------------
+TTS_LANG_MAP = {
+    "English": "en",
+    "Spanish": "es",
+    "French": "fr",
+    "German": "de",
+    "Hindi": "hi",
+    "Japanese": "ja",
+    "Chinese": "zh-CN",
+    "Portuguese": "pt",
+    "Italian": "it",
+    "Arabic": "ar",
+    "Russian": "ru",
+    "Korean": "ko",
+    "Dutch": "nl",
+    "Turkish": "tr",
+}
+
+def clean_markdown_for_speech(text: str) -> str:
+    """Strip markdown formatting syntax to produce clean, natural-sounding speech."""
+    # Remove markdown links [text](url) -> text
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    # Remove headers (#, ##, ###)
+    cleaned = re.sub(r'#+\s*', '', cleaned)
+    # Remove bold/italic/code markers (*, _, **, __, `)
+    cleaned = re.sub(r'[*_~`]', '', cleaned)
+    # Replace bullet point symbols
+    cleaned = re.sub(r'^\s*[-•*+]\s+', '', cleaned, flags=re.MULTILINE)
+    # Remove blockquotes
+    cleaned = re.sub(r'^\s*>\s+', '', cleaned, flags=re.MULTILINE)
+    # Remove excessive blank lines
+    cleaned = re.sub(r'\n+', '\n', cleaned).strip()
+    return cleaned
+
+def generate_audio_summary(text: str, language_name: str) -> io.BytesIO:
+    """Convert summarized text into an in-memory MP3 audio stream using gTTS."""
+    lang_code = TTS_LANG_MAP.get(language_name, "en")
+    clean_text = clean_markdown_for_speech(text)
+    if not clean_text:
+        clean_text = "No content available to read."
+    tts = gTTS(text=clean_text, lang=lang_code, slow=False)
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    return fp
+
+# ---------------------------------------------------------------------------
 # Session State Initialization
 # ---------------------------------------------------------------------------
 if "active_summary" not in st.session_state:
@@ -351,6 +403,12 @@ if "active_doc_text" not in st.session_state:
     st.session_state["active_doc_text"] = ""
 if "current_input_text" not in st.session_state:
     st.session_state["current_input_text"] = ""
+if "cached_audio" not in st.session_state:
+    st.session_state["cached_audio"] = None
+if "cached_audio_id" not in st.session_state:
+    st.session_state["cached_audio_id"] = None
+if "history" not in st.session_state:
+    st.session_state["history"] = []
 
 # ---------------------------------------------------------------------------
 # Provider Configurations & Environment Lookups
@@ -475,6 +533,47 @@ with st.sidebar:
         index=0,
         help="The document will be synthesized and translated directly into this language.",
     )
+
+    st.markdown("---")
+    st.markdown(f"### 📚 Session History ({len(st.session_state['history'])})")
+
+    if not st.session_state["history"]:
+        st.caption("No summaries in this session yet. Summarize any content to save here.")
+    else:
+        history_labels = [
+            f"{i+1}. [{item['time']}] {item['format']} ({item['source'][:16]}...)"
+            for i, item in enumerate(st.session_state["history"])
+        ]
+        selected_idx = st.selectbox(
+            "Select past summary",
+            options=range(len(history_labels)),
+            format_func=lambda i: history_labels[i],
+            key="history_selector",
+            label_visibility="collapsed",
+        )
+        col_hist_load, col_hist_clear = st.columns([1, 1])
+        with col_hist_load:
+            if st.button("📂 Load", use_container_width=True, help="Load this summary to main view"):
+                selected_item = st.session_state["history"][selected_idx]
+                st.session_state["active_summary"] = selected_item["summary"]
+                st.session_state["active_model"] = selected_item["model"]
+                st.session_state["active_provider"] = selected_item["provider"]
+                st.session_state["active_format"] = selected_item["format"]
+                st.session_state["active_language"] = selected_item["language"]
+                st.session_state["active_doc_text"] = selected_item["doc_text"]
+                st.session_state["active_source"] = selected_item["source"]
+                st.session_state["orig_words"] = selected_item["orig_words"]
+                st.session_state["sum_words"] = selected_item["sum_words"]
+                st.session_state["compression_pct"] = selected_item["compression_pct"]
+                st.session_state["time_saved"] = selected_item["time_saved"]
+                st.session_state["chat_history"] = []
+                st.session_state["cached_audio"] = None
+                st.session_state["cached_audio_id"] = None
+                st.rerun()
+        with col_hist_clear:
+            if st.button("🗑️ Clear", use_container_width=True, help="Clear session history"):
+                st.session_state["history"] = []
+                st.rerun()
 
     st.markdown("---")
     with st.expander("ℹ️ How it works", expanded=False):
@@ -736,6 +835,26 @@ if summarize_btn:
     st.session_state["compression_pct"] = compression_pct
     st.session_state["time_saved"] = time_saved
     st.session_state["chat_history"] = []  # fresh chat for new document/summary
+    st.session_state["cached_audio"] = None
+    st.session_state["cached_audio_id"] = None
+
+    # Record into Session History
+    history_entry = {
+        "id": f"{int(datetime.now().timestamp())}",
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "source": input_label if input_label else "Raw Text",
+        "format": format_type,
+        "language": target_language,
+        "provider": provider,
+        "model": actual_model,
+        "summary": summary,
+        "doc_text": raw_text,
+        "orig_words": orig_words,
+        "sum_words": sum_words,
+        "compression_pct": compression_pct,
+        "time_saved": time_saved,
+    }
+    st.session_state["history"].insert(0, history_entry)
     st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -794,6 +913,38 @@ if st.session_state.get("active_summary"):
     with col_dl2:
         with st.expander("📋 View Raw Markdown"):
             st.code(act_summary, language="markdown")
+
+    # -----------------------------------------------------------------------
+    # Audio Brief / Text-to-Speech (Phase 4)
+    # -----------------------------------------------------------------------
+    with st.expander("🎧 Audio Brief (Listen & Download MP3)", expanded=False):
+        current_summary_id = f"{act_format}_{len(act_summary)}_{act_lang}"
+        col_audio1, col_audio2 = st.columns([1, 2])
+        with col_audio1:
+            gen_audio_btn = st.button("▶️ Generate Audio Brief", use_container_width=True)
+        with col_audio2:
+            st.caption(f"Synthesizes natural spoken voice in **{act_lang}** via gTTS.")
+
+        if gen_audio_btn:
+            with st.spinner("🎙️ Synthesizing spoken audio brief..."):
+                try:
+                    audio_fp = generate_audio_summary(act_summary, act_lang)
+                    st.session_state["cached_audio"] = audio_fp.getvalue()
+                    st.session_state["cached_audio_id"] = current_summary_id
+                except Exception as exc:
+                    st.error(f"❌ Audio Generation Error: {exc}")
+
+        if st.session_state.get("cached_audio") and st.session_state.get("cached_audio_id") == current_summary_id:
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            st.audio(st.session_state["cached_audio"], format="audio/mp3")
+            audio_file_name = f"audio_{act_format.lower().replace(' ', '_')}_{act_lang.split()[0].lower()}.mp3"
+            st.download_button(
+                label="⬇️ Download Audio Brief (.mp3)",
+                data=st.session_state["cached_audio"],
+                file_name=audio_file_name,
+                mime="audio/mp3",
+                use_container_width=True,
+            )
 
     # -----------------------------------------------------------------------
     # Interactive "Chat with Document" Section (Phase 3)
