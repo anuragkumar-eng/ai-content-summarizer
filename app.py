@@ -1,4 +1,4 @@
-﻿"""
+"""
 app.py  —  AI-Powered Content Summarizer Studio
 Modern, sleek SaaS-grade UI for LangChain-powered summarization.
 Supports Groq (Free), Google Gemini (Free), and OpenAI (Paid).
@@ -579,7 +579,33 @@ with tab_yt:
                 st.success(f"✅ Extracted **{len(raw_text):,}** characters of spoken transcript.")
                 # Render clean video preview
                 st.video(f"https://www.youtube.com/watch?v={vid_id}")
-            except (ValueError, RuntimeError) as exc:
+            except RuntimeError as exc:
+                if str(exc) == "YOUTUBE_IP_BLOCKED":
+                    from document_processor import extract_youtube_video_id
+                    vid_id = extract_youtube_video_id(yt_input.strip())
+                    st.warning(
+                        "🛡️ **Cloud Datacenter IP Blocked by YouTube**: YouTube prevents automated cloud servers "
+                        "(like Streamlit Cloud / AWS) from scraping captions directly."
+                    )
+                    st.info(
+                        "💡 **2 Easy Ways to Summarize this Video:**\n\n"
+                        "1. **Local App**: Run this app locally on your computer (`streamlit run app.py`) — your home residential IP is never blocked by YouTube!\n"
+                        "2. **Quick Copy**: On the YouTube video, click **'… More' ➔ 'Show transcript'**, then copy and paste it into the box below:"
+                    )
+                    if vid_id:
+                        st.video(f"https://www.youtube.com/watch?v={vid_id}")
+                    manual_transcript = st.text_area(
+                        label="Paste YouTube Transcript Here",
+                        placeholder="Paste the copied transcript from YouTube here...",
+                        height=160,
+                    )
+                    if manual_transcript.strip():
+                        raw_text = manual_transcript.strip()
+                        input_label = f"YouTube: https://youtu.be/{vid_id}" if vid_id else "YouTube Transcript"
+                        st.success(f"✅ Loaded **{len(raw_text):,}** characters of video transcript.")
+                else:
+                    st.error(f"❌ YouTube Error: {exc}")
+            except ValueError as exc:
                 st.error(f"❌ YouTube Error: {exc}")
 
 # ---------------------------------------------------------------------------

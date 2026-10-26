@@ -294,5 +294,7 @@ def extract_text_from_youtube(url: str) -> tuple[str, str]:
             raise RuntimeError(
                 f"This YouTube video is private, age-restricted, or unavailable (ID: {video_id})."
             )
+        elif any(k in err_msg for k in ["blocking requests from your IP", "IpBlocked", "RequestBlocked", "cloud provider"]):
+            raise RuntimeError("YOUTUBE_IP_BLOCKED")
         else:
             raise RuntimeError(f"Failed to fetch YouTube transcript: {exc}")
