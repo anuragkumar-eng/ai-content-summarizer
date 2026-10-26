@@ -1,4 +1,4 @@
-﻿"""
+"""
 summarizer.py
 -------------
 LangChain Map-Reduce summarisation supporting multiple FREE providers:
@@ -548,3 +548,112 @@ def summarize_text(
                 raise last_error
 
     raise last_error or RuntimeError("Summarisation failed with all candidate models.")
+
+
+# ---------------------------------------------------------------------------
+# Interactive Document Q&A Assistant (Phase 3)
+# ---------------------------------------------------------------------------
+
+QA_PROMPT_TEMPLATE = """\
+You are an expert interactive document research assistant.
+Answer the user's question accurately, concisely, and factually based ONLY on the provided Document Context.
+
+Rules:
+1. Ground your answer strictly in the document text provided below.
+2. If the answer cannot be found or reasonably inferred from the document, clearly state:
+   "I cannot find information about that in the provided document."
+3. Do NOT invent facts or speculate outside the document.
+4. Keep answers direct, well-structured, and helpful (using bullet points where appropriate).
+
+Document Context:
+-----------------
+{context}
+-----------------
+
+Conversation History:
+{history}
+
+User Question: {question}
+
+Helpful Answer:"""
+
+
+def answer_document_question(
+    document_text: str,
+    question: str,
+    chat_history: list[dict],
+    api_key: str,
+    provider: str = "Groq (Free)",
+    model_name: str = "llama-3.1-8b-instant",
+    temperature: float = 0.2,
+) -> tuple[str, str]:
+    """Answers a user question grounded in the document context.
+
+    Parameters
+    ----------
+    document_text : Full source document text.
+    question      : User query.
+    chat_history  : List of message dicts: [{"role": "user"|"assistant", "content": str}].
+    api_key       : API key for the chosen provider.
+
+    Returns
+    -------
+    tuple[str, str]: (answer, actual_model_used)
+    """
+    if not document_text or not document_text.strip():
+        raise ValueError("Document text is missing.")
+    if not question or not question.strip():
+        raise ValueError("Question cannot be empty.")
+    if not api_key or not api_key.strip():
+        raise ValueError(f"{provider} API key is missing.")
+
+    # Format recent history (up to last 6 turns)
+    formatted_history = []
+    for msg in chat_history[-6:]:
+        role = "User" if msg.get("role") == "user" else "Assistant"
+        formatted_history.append(f"{role}: {msg.get('content', '')}")
+    history_str = "\n".join(formatted_history) if formatted_history else "No previous conversation."
+
+    # If document exceeds 60,000 characters, truncate context safely
+    context_str = document_text.strip()
+    if len(context_str) > 60_000:
+        context_str = context_str[:60_000] + "\n\n[... Document truncated for Q&A context window ...]"
+
+    available = get_available_models(provider, api_key)
+    candidate_models = [model_name] + [m for m in available if m != model_name]
+
+    last_error = None
+    for idx, candidate in enumerate(candidate_models):
+        try:
+            llm = _build_llm(provider, api_key.strip(), candidate, temperature)
+            qa_chain = ChatPromptTemplate.from_template(QA_PROMPT_TEMPLATE) | llm | StrOutputParser()
+            answer = _invoke_with_retry(
+                qa_chain,
+                {
+                    "context": context_str,
+                    "history": history_str,
+                    "question": question.strip(),
+                },
+            )
+            return answer.strip(), candidate
+        except Exception as exc:
+            last_error = exc
+            err_str = str(exc).lower()
+            should_fallback = any(
+                phrase in err_str
+                for phrase in [
+                    "not found",
+                    "not_found",
+                    "does not exist",
+                    "decommissioned",
+                    "404",
+                    "model_not_found",
+                    "access to it",
+                ]
+            )
+            if should_fallback and idx < len(candidate_models) - 1:
+                continue
+            else:
+                raise last_error
+
+    raise last_error or RuntimeError("Q&A failed with all candidate models.")

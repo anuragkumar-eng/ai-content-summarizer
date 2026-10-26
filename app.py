@@ -1,14 +1,14 @@
-"""
+﻿"""
 app.py  —  AI-Powered Content Summarizer Studio
-Modern, sleek SaaS-grade UI for LangChain-powered summarization.
+Modern, sleek SaaS-grade UI for LangChain-powered summarization & Q&A.
 Supports Groq (Free), Google Gemini (Free), and OpenAI (Paid).
 Features:
   - 4 Ingestion Formats: Raw Text, Web URLs, PDF Documents, YouTube Videos
   - 6 Specialized Summary Personas (Executive, Action Items, ELI5, Social, etc.)
   - Multilingual Output (10+ Languages)
-  - Pre-processing metrics (Word count, read time, token estimates)
-  - Post-processing compression analytics
-  - Auto-scrapes URLs, extracts PDFs, & fetches YouTube transcripts
+  - Interactive "Chat with Document" Q&A Assistant (Phase 3)
+  - Pre-processing metrics & Post-processing compression analytics
+  - Auto-scrapes URLs, extracts PDFs, & handles YouTube transcripts
 """
 
 import os
@@ -22,9 +22,11 @@ from document_processor import (
     extract_text_from_pdf,
     extract_text_from_url,
     extract_text_from_youtube,
+    extract_youtube_video_id,
 )
 from summarizer import (
     summarize_text,
+    answer_document_question,
     get_available_models,
     PROVIDERS,
     DEFAULT_MODELS,
@@ -283,6 +285,24 @@ html, body, [class*="css"] {
     border-radius: 9999px;
 }
 
+/* ── Q&A Assistant Section ───────────────────────────────────── */
+.chat-container-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.8rem 0 0.4rem 0;
+}
+
+.chat-badge {
+    font-size: 0.75rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    background: rgba(168, 85, 247, 0.15);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.3);
+    font-weight: 600;
+}
+
 /* ── Polished Streamlit Buttons ───────────────────────────────── */
 div.stButton > button[kind="primary"] {
     background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
@@ -319,6 +339,18 @@ div.stButton > button[kind="secondary"] {
 </style>
 """
 st.markdown(MODERN_CSS, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
+# Session State Initialization
+# ---------------------------------------------------------------------------
+if "active_summary" not in st.session_state:
+    st.session_state["active_summary"] = None
+if "chat_history" not in st.session_state:
+    st.session_state["chat_history"] = []
+if "active_doc_text" not in st.session_state:
+    st.session_state["active_doc_text"] = ""
+if "current_input_text" not in st.session_state:
+    st.session_state["current_input_text"] = ""
 
 # ---------------------------------------------------------------------------
 # Provider Configurations & Environment Lookups
@@ -448,12 +480,11 @@ with st.sidebar:
     with st.expander("ℹ️ How it works", expanded=False):
         st.markdown(
             """
-            - **YouTube Summarizer**: Extracts complete captions & subtitles from videos.
-            - **Personas**: Custom engineered prompts extract executive takeaways, action items, or simplified analogies.
-            - **Multilingual**: LLMs ingest source text in any language and output fluently in your selected target language.
-            - **Single-Pass**: Content under 1,200 chars summarizes in 1 call for max speed.
-            - **Map-Reduce**: Large documents split into overlapping chunks, processed in parallel, and synthesized.
-            - **Auto-Fallback**: If a model spikes, the engine retries with backoff automatically.
+            - **Interactive Q&A**: Ask follow-up questions about the document anytime.
+            - **YouTube Summarizer**: Extracts captions directly or supports instant fallback.
+            - **Personas**: Custom engineered prompts extract executive takeaways or action items.
+            - **Multilingual**: LLMs synthesize fluently into your target language.
+            - **Auto-Fallback**: Retries with backoff on any provider rate limits automatically.
             """
         )
 
@@ -490,9 +521,6 @@ SAMPLE_TEXT = (
     "fostering transparent human-in-the-loop oversight remains the paramount challenge of contemporary technology governance."
 )
 
-if "current_input_text" not in st.session_state:
-    st.session_state["current_input_text"] = ""
-
 col_tools1, col_tools2 = st.columns([1, 1])
 with col_tools1:
     if st.button("💡 Load Sample Article", help="Click to populate sample text for instant testing"):
@@ -503,6 +531,9 @@ with col_tools2:
     if st.session_state["current_input_text"]:
         if st.button("🧹 Clear Input", help="Clear the currently loaded text"):
             st.session_state["current_input_text"] = ""
+            st.session_state["active_summary"] = None
+            st.session_state["chat_history"] = []
+            st.session_state["active_doc_text"] = ""
             st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -577,11 +608,9 @@ with tab_yt:
                 raw_text, vid_id = extract_text_from_youtube(yt_input.strip())
                 input_label = f"YouTube: https://youtu.be/{vid_id}"
                 st.success(f"✅ Extracted **{len(raw_text):,}** characters of spoken transcript.")
-                # Render clean video preview
                 st.video(f"https://www.youtube.com/watch?v={vid_id}")
             except RuntimeError as exc:
                 if str(exc) == "YOUTUBE_IP_BLOCKED":
-                    from document_processor import extract_youtube_video_id
                     vid_id = extract_youtube_video_id(yt_input.strip())
                     st.warning(
                         "🛡️ **Cloud Datacenter IP Blocked by YouTube**: YouTube prevents automated cloud servers "
@@ -589,7 +618,7 @@ with tab_yt:
                     )
                     st.info(
                         "💡 **2 Easy Ways to Summarize this Video:**\n\n"
-                        "1. **Local App**: Run this app locally on your computer (`streamlit run app.py`) — your home residential IP is never blocked by YouTube!\n"
+                        "1. **Local App**: Run this app locally on your computer (`streamlit run app.py`) — your residential IP is never blocked by YouTube!\n"
                         "2. **Quick Copy**: On the YouTube video, click **'… More' ➔ 'Show transcript'**, then copy and paste it into the box below:"
                     )
                     if vid_id:
@@ -657,7 +686,7 @@ summarize_btn = st.button(
 )
 
 # ---------------------------------------------------------------------------
-# Execution & Modern Output Presentation
+# Execution Logic (Stores results into Session State)
 # ---------------------------------------------------------------------------
 if summarize_btn:
     if not api_key:
@@ -694,19 +723,48 @@ if summarize_btn:
     compression_pct = max(0, round((1 - (sum_words / max(orig_words, 1))) * 100))
     time_saved = max(0.5, round((orig_words - sum_words) / 220, 1))
 
+    # Persist in Session State so Q&A doesn't wipe output on re-run
+    st.session_state["active_summary"] = summary
+    st.session_state["active_model"] = actual_model
+    st.session_state["active_provider"] = provider
+    st.session_state["active_format"] = format_type
+    st.session_state["active_language"] = target_language
+    st.session_state["active_doc_text"] = raw_text
+    st.session_state["active_source"] = input_label
+    st.session_state["orig_words"] = orig_words
+    st.session_state["sum_words"] = sum_words
+    st.session_state["compression_pct"] = compression_pct
+    st.session_state["time_saved"] = time_saved
+    st.session_state["chat_history"] = []  # fresh chat for new document/summary
+    st.rerun()
+
+# ---------------------------------------------------------------------------
+# Output Display & Interactive Document Q&A (Phase 3)
+# ---------------------------------------------------------------------------
+if st.session_state.get("active_summary"):
+    act_summary = st.session_state["active_summary"]
+    act_format = st.session_state.get("active_format", "Summary")
+    act_prov = st.session_state.get("active_provider", provider)
+    act_model = st.session_state.get("active_model", model_name)
+    act_lang = st.session_state.get("active_language", "English")
+    orig_words = st.session_state.get("orig_words", 0)
+    sum_words = st.session_state.get("sum_words", 0)
+    compression_pct = st.session_state.get("compression_pct", 0)
+    time_saved = st.session_state.get("time_saved", 0)
+
     st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
-    st.success(f"🎉 {format_type} Generated Successfully in {target_language}!")
+    st.success(f"🎉 {act_format} Generated Successfully in {act_lang}!")
 
     # Styled Executive Summary Card
     with st.container(border=True):
         st.markdown(
             f"""
             <div class="result-header">
-                <div class="result-title">📄 {format_type}</div>
+                <div class="result-title">📄 {act_format}</div>
                 <div class="meta-badges">
-                    <span class="meta-pill">{provider}</span>
-                    <span class="meta-pill">{actual_model}</span>
-                    <span class="meta-pill-lang">🌐 {target_language}</span>
+                    <span class="meta-pill">{act_prov}</span>
+                    <span class="meta-pill">{act_model}</span>
+                    <span class="meta-pill-lang">🌐 {act_lang}</span>
                 </div>
             </div>
             <div class="analytics-bar">
@@ -720,19 +778,66 @@ if summarize_btn:
             unsafe_allow_html=True,
         )
 
-        st.markdown(summary)
+        st.markdown(act_summary)
 
-    # Action Toolbar (Download & Quick Access)
+    # Action Toolbar (Download & Raw View)
     col_dl1, col_dl2 = st.columns([1, 1])
     with col_dl1:
-        clean_file_name = f"summary_{format_type.lower().replace(' ', '_')}_{target_language.split()[0].lower()}.txt"
+        clean_file_name = f"summary_{act_format.lower().replace(' ', '_')}_{act_lang.split()[0].lower()}.txt"
         st.download_button(
             label="⬇️ Download Summary (.txt)",
-            data=summary,
+            data=act_summary,
             file_name=clean_file_name,
             mime="text/plain",
             use_container_width=True,
         )
     with col_dl2:
         with st.expander("📋 View Raw Markdown"):
-            st.code(summary, language="markdown")
+            st.code(act_summary, language="markdown")
+
+    # -----------------------------------------------------------------------
+    # Interactive "Chat with Document" Section (Phase 3)
+    # -----------------------------------------------------------------------
+    st.markdown("---")
+    col_chat_title, col_chat_btn = st.columns([3, 1])
+    with col_chat_title:
+        st.markdown("### 💬 Chat with this Document")
+        st.caption("Ask specific follow-up questions, extract details, or clarify any section.")
+    with col_chat_btn:
+        if st.session_state.get("chat_history"):
+            if st.button("🗑️ Reset Chat", help="Clear conversation history for this document"):
+                st.session_state["chat_history"] = []
+                st.rerun()
+
+    # Render previous conversation history
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Chat input box for new user query
+    user_query = st.chat_input("Ask any question about this document...")
+    if user_query:
+        if not api_key:
+            st.error("Please ensure your API key is configured to use the Q&A Assistant.")
+        else:
+            # Add user message to state and render
+            st.session_state["chat_history"].append({"role": "user", "content": user_query})
+            with st.chat_message("user"):
+                st.markdown(user_query)
+
+            # Generate assistant answer grounded in document
+            with st.chat_message("assistant"):
+                with st.spinner("🔍 Reviewing document and generating answer..."):
+                    try:
+                        answer, ans_model = answer_document_question(
+                            document_text=st.session_state["active_doc_text"],
+                            question=user_query,
+                            chat_history=st.session_state["chat_history"][:-1],
+                            api_key=api_key,
+                            provider=provider,
+                            model_name=model_name,
+                        )
+                        st.markdown(answer)
+                        st.session_state["chat_history"].append({"role": "assistant", "content": answer})
+                    except Exception as exc:
+                        st.error(f"❌ Q&A Error: {exc}")

@@ -28,6 +28,9 @@ A modern, full-stack web application built with **Streamlit**, **LangChain**, an
   - **6 Specialized Personas**: Executive Brief, Short Summary, Detailed Bullet Points, Action Items & Key Decisions, ELI5, Social & LinkedIn Post.
   - **10+ Output Languages**: Cross-lingual translation into English, Spanish, French, German, Hindi, Japanese, Chinese, etc.
   - One-click **Download (.txt)** and **Raw Markdown** preview.
+- **💬 Interactive "Chat with Document"**:
+  - Follow-up Q&A assistant embedded directly under the summary.
+  - Ask specific questions, clarify facts, or extract data points strictly grounded in the document context.
 - **Security**: API keys are securely loaded from a local `.env` file (never exposed in the UI or tracked in Git).
 
 ---
